@@ -1,1 +1,105 @@
+name: Publish Aetherlist card library
+
+on:
+  workflow_dispatch:
+  schedule:
+    # GitHub cron is UTC. Running at both possible UTC hours plus the Zurich
+    # guard below keeps this at 05:00 through CET and CEST transitions.
+    - cron: "0 4 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: aetherlist-card-library
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check 05:00 Europe/Zurich schedule
+        id: zurich_time
+        shell: bash
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != "schedule" ] || [ "$(TZ=Europe/Zurich date +%H:%M)" = "05:00" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping the extra UTC trigger; it is not 05:00 in Zurich."
+          fi
+
+      - name: Check out repository
+        if: steps.zurich_time.outputs.run == 'true'
+        uses: actions/checkout@v4
+
+      # Deliberately do not enable setup-python's dependency cache here. The
+      # previous workflow failed before the build because its hard-coded
+      # cache-dependency-path did not match the repository layout.
+      - name: Set up Python
+        if: steps.zurich_time.outputs.run == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Find catalog builder
+        if: steps.zurich_time.outputs.run == 'true'
+        shell: bash
+        run: |
+          builder="$(find "$GITHUB_WORKSPACE" -type f -name build_catalog.py -print -quit)"
+          if [ -z "$builder" ]; then
+            echo "::error::build_catalog.py is missing. Add the github-library-builder folder to the repository and commit it."
+            exit 1
+          fi
+          echo "AETHERLIST_BUILDER=$builder" >> "$GITHUB_ENV"
+          echo "Using $builder"
+
+      - name: Install builder dependencies
+        if: steps.zurich_time.outputs.run == 'true'
+        run: python -m pip install --disable-pip-version-check "ijson==3.4.0" "requests==2.32.5"
+
+      - name: Build split cards, rulings and tags
+        if: steps.zurich_time.outputs.run == 'true'
+        env:
+          AETHERLIST_OUTPUT_ROOT: ${{ github.workspace }}
+          AETHERLIST_RELEASE_BASE: https://github.com/${{ github.repository }}/releases/download/card-library
+        run: python "$AETHERLIST_BUILDER"
+
+      - name: Locate and validate output
+        if: steps.zurich_time.outputs.run == 'true'
+        shell: bash
+        run: |
+          manifest="$GITHUB_WORKSPACE/dist/aetherlist-library-manifest.json"
+          if [ ! -s "$manifest" ]; then
+            echo "::error::The builder did not create aetherlist-library-manifest.json."
+            exit 1
+          fi
+          for archive in \
+            "$GITHUB_WORKSPACE/dist/aetherlist-cards.sqlite.gz" \
+            "$GITHUB_WORKSPACE/dist/aetherlist-oracle-tags.sqlite.gz" \
+            "$GITHUB_WORKSPACE/dist/aetherlist-art-tags.sqlite.gz" \
+            "$GITHUB_WORKSPACE/dist/aetherlist-rulings.sqlite.gz"; do
+            if [ ! -s "$archive" ]; then
+              echo "::error::The builder did not create $archive."
+              exit 1
+            fi
+            gzip -t "$archive"
+          done
+          python -m json.tool "$manifest" >/dev/null
+          echo "AETHERLIST_MANIFEST=$manifest" >> "$GITHUB_ENV"
+          ls -lh "$GITHUB_WORKSPACE"/dist/*.gz "$manifest"
+
+      - name: Publish stable release assets
+        if: steps.zurich_time.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release view card-library >/dev/null 2>&1 || \
+          gh release create card-library --title "Aetherlist card library" --notes "Automatically rebuilt from Scryfall bulk data."
+          # Remove the obsolete monolithic asset after migrating to schema v2.
+          gh release delete-asset card-library aetherlist-library.sqlite.gz --yes >/dev/null 2>&1 || true
+          gh release upload card-library "$GITHUB_WORKSPACE"/dist/*.gz "$AETHERLIST_MANIFEST" --clobber
 
