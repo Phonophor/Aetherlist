@@ -5,7 +5,7 @@ on:
   schedule:
     # GitHub cron is UTC. Running at both possible UTC hours plus the Zurich
     # guard below keeps this at 05:00 through CET and CEST transitions.
-    - cron: "0 4 * * *"
+    - cron: "0 3 * * *"
 
 permissions:
   contents: write
@@ -77,6 +77,7 @@ jobs:
             exit 1
           fi
           for archive in \
+            "$GITHUB_WORKSPACE/dist/aetherlist-catalog.sqlite.gz" \
             "$GITHUB_WORKSPACE/dist/aetherlist-cards.sqlite.gz" \
             "$GITHUB_WORKSPACE/dist/aetherlist-oracle-tags.sqlite.gz" \
             "$GITHUB_WORKSPACE/dist/aetherlist-art-tags.sqlite.gz" \
@@ -102,4 +103,3 @@ jobs:
           # Remove the obsolete monolithic asset after migrating to schema v2.
           gh release delete-asset card-library aetherlist-library.sqlite.gz --yes >/dev/null 2>&1 || true
           gh release upload card-library "$GITHUB_WORKSPACE"/dist/*.gz "$AETHERLIST_MANIFEST" --clobber
-
