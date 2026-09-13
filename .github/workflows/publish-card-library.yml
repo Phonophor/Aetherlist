@@ -5,7 +5,7 @@ on:
   schedule:
     # GitHub cron is UTC. Running at both possible UTC hours plus the Zurich
     # guard below keeps this at 05:00 through CET and CEST transitions.
-    - cron: "0 3 * * *"
+    - cron: "0 3,4 * * *"
 
 permissions:
   contents: write
