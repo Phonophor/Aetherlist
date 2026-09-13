@@ -7,12 +7,13 @@ This repository builds the expensive part of Aetherlist's offline library on a G
 Put these files at the root of `Phonophor/Aetherlist`. In GitHub, open **Actions → Publish Aetherlist card library → Run workflow**. The workflow creates a release tagged `card-library` with:
 
 - `aetherlist-library-manifest.json`
+- `aetherlist-catalog.sqlite.gz` (ready-to-open database used by the app)
 - `aetherlist-cards.sqlite.gz`
 - `aetherlist-oracle-tags.sqlite.gz`
 - `aetherlist-art-tags.sqlite.gz`
 - `aetherlist-rulings.sqlite.gz`
 
-The URLs remain stable. Every dataset has its own Scryfall update time, byte size, and SHA-256 in the manifest, so the app checks first and downloads only datasets that changed.
+The URLs remain stable. `aetherlist-catalog.sqlite.gz` already contains all catalog tables, indexes, and FTS data. Aetherlist activates it as a database file instead of copying cards or rebuilding search data on the phone. Split assets remain available for diagnostics and future modular readers.
 
 ## Oracle and art tags
 
