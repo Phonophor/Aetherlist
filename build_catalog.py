@@ -35,7 +35,7 @@ MANIFEST = DIST / "aetherlist-library-manifest.json"
 BATCH = 5000
 # Increment only when the on-device meaning/schema of a split asset changes.
 # Normal daily rebuilds use Scryfall's per-dataset updated_at for freshness.
-DATASET_REVISION = 2
+DATASET_REVISION = 3
 
 CARD_COLUMNS = (
     "id", "oracleId", "name", "manaCost", "manaValue", "typeLine", "oracleText", "colors",
@@ -173,6 +173,37 @@ def user_schema(connection: sqlite3.Connection) -> None:
         CREATE INDEX index_cardtrader_blueprints_scryfallId ON cardtrader_blueprints(scryfallId);
         PRAGMA user_version=11;
     """)
+
+
+def verify_room_managed_schema(connection: sqlite3.Connection) -> None:
+    """Reject catalog files whose managed card indexes differ from Room v11.
+
+    Room validates declared indexes before running AppDatabase.onOpen. Runtime-only
+    expression/optimization indexes must therefore be created by onOpen, not shipped.
+    """
+    expected_card_indexes = {
+        "index_cards_oracleId", "index_cards_setCode", "index_cards_releasedAt",
+        "index_cards_cardmarketId", "index_cards_lang",
+    }
+    actual_card_indexes = {
+        row[0] for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='cards' AND sql IS NOT NULL"
+        )
+    }
+    if actual_card_indexes != expected_card_indexes:
+        raise RuntimeError(
+            f"Room cards index mismatch: expected {sorted(expected_card_indexes)}, "
+            f"found {sorted(actual_card_indexes)}"
+        )
+    expected_tables = {
+        "cards", "oracle_tags", "card_oracle_tags", "art_tags", "illustration_art_tags",
+        "rulings", "decks", "deck_folders", "deck_cards", "deck_card_tags",
+        "cardtrader_prices", "oracle_price_refresh", "cardtrader_blueprints",
+    }
+    actual_tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    missing = expected_tables - actual_tables
+    if missing:
+        raise RuntimeError(f"Room tables missing: {sorted(missing)}")
 
 
 @contextmanager
@@ -453,7 +484,6 @@ def main() -> None:
             CREATE INDEX index_cards_releasedAt ON cards(releasedAt);
             CREATE INDEX index_cards_cardmarketId ON cards(cardmarketId);
             CREATE INDEX index_cards_lang ON cards(lang);
-            CREATE INDEX index_cards_oracleKey_expr ON cards(COALESCE(oracleId,id));
             CREATE INDEX index_card_oracle_tags_tagSlug ON card_oracle_tags(tagSlug);
             CREATE INDEX index_card_oracle_tags_tagSlug_oracleId ON card_oracle_tags(tagSlug,oracleId);
             CREATE INDEX index_illustration_art_tags_tagSlug ON illustration_art_tags(tagSlug);
@@ -463,6 +493,7 @@ def main() -> None:
             INSERT INTO card_search_fts(card_search_fts) VALUES('rebuild');
             ANALYZE;
         """)
+    verify_room_managed_schema(db)
     integrity = db.execute("PRAGMA integrity_check").fetchone()[0]
     if integrity != "ok":
         raise RuntimeError(f"SQLite integrity check failed: {integrity}")
