@@ -13,7 +13,7 @@ Put these files at the root of `Phonophor/Aetherlist`. In GitHub, open **Actions
 - `aetherlist-art-tags.sqlite.gz`
 - `aetherlist-rulings.sqlite.gz`
 
-The URLs remain stable. `aetherlist-catalog.sqlite.gz` already contains all catalog tables, indexes, and FTS data. Aetherlist activates it as a database file instead of copying cards or rebuilding search data on the phone. Split assets remain available for diagnostics and future modular readers.
+The URLs remain stable. `aetherlist-catalog.sqlite.gz` already contains all catalog tables, Room-managed indexes, and FTS data. Runtime-only expression indexes are deliberately excluded until Room finishes schema validation. Aetherlist activates the file instead of copying cards or rebuilding search data on the phone. Split assets remain available for diagnostics and future modular readers.
 
 ## Oracle and art tags
 
