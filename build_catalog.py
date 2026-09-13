@@ -35,7 +35,7 @@ MANIFEST = DIST / "aetherlist-library-manifest.json"
 BATCH = 5000
 # Increment only when the on-device meaning/schema of a split asset changes.
 # Normal daily rebuilds use Scryfall's per-dataset updated_at for freshness.
-DATASET_REVISION = 1
+DATASET_REVISION = 2
 
 CARD_COLUMNS = (
     "id", "oracleId", "name", "manaCost", "manaValue", "typeLine", "oracleText", "colors",
@@ -124,7 +124,7 @@ def card_row(card: dict, stamp: int) -> tuple:
 
 def schema(connection: sqlite3.Connection) -> None:
     columns = [
-        "id TEXT PRIMARY KEY", "oracleId TEXT", "name TEXT NOT NULL", "manaCost TEXT", "manaValue REAL NOT NULL",
+        "id TEXT NOT NULL PRIMARY KEY", "oracleId TEXT", "name TEXT NOT NULL", "manaCost TEXT", "manaValue REAL NOT NULL",
         "typeLine TEXT NOT NULL", "oracleText TEXT NOT NULL", "colors TEXT NOT NULL", "colorIdentity TEXT NOT NULL",
         "rarity TEXT NOT NULL", "setCode TEXT NOT NULL", "setName TEXT NOT NULL", "collectorNumber TEXT NOT NULL",
         "releasedAt TEXT NOT NULL", "legalitiesJson TEXT NOT NULL", "keywordsJson TEXT NOT NULL", "imageNormal TEXT",
@@ -141,12 +141,37 @@ def schema(connection: sqlite3.Connection) -> None:
     ]
     connection.executescript(f"""
         CREATE TABLE cards ({','.join(columns)});
-        CREATE TABLE oracle_tags(slug TEXT PRIMARY KEY, label TEXT NOT NULL);
+        CREATE TABLE oracle_tags(slug TEXT NOT NULL PRIMARY KEY, label TEXT NOT NULL);
         CREATE TABLE card_oracle_tags(oracleId TEXT NOT NULL, tagSlug TEXT NOT NULL, weight REAL NOT NULL, PRIMARY KEY(oracleId,tagSlug));
-        CREATE TABLE art_tags(slug TEXT PRIMARY KEY, label TEXT NOT NULL);
+        CREATE TABLE art_tags(slug TEXT NOT NULL PRIMARY KEY, label TEXT NOT NULL);
         CREATE TABLE illustration_art_tags(illustrationId TEXT NOT NULL, tagSlug TEXT NOT NULL, weight REAL NOT NULL, PRIMARY KEY(illustrationId,tagSlug));
         CREATE TABLE rulings(oracleId TEXT NOT NULL, publishedAt TEXT NOT NULL, comment TEXT NOT NULL, source TEXT NOT NULL, PRIMARY KEY(oracleId,publishedAt,comment));
         CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    """)
+
+
+def user_schema(connection: sqlite3.Connection) -> None:
+    """Add the small mutable Room tables, empty, to the ready-to-activate snapshot."""
+    connection.executescript("""
+        CREATE TABLE decks(id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,name TEXT NOT NULL,format TEXT NOT NULL,notes TEXT NOT NULL,folderId INTEGER,createdAt INTEGER NOT NULL,updatedAt INTEGER NOT NULL);
+        CREATE INDEX index_decks_folderId ON decks(folderId);
+        CREATE TABLE deck_folders(id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,name TEXT NOT NULL,sortOrder INTEGER NOT NULL,createdAt INTEGER NOT NULL);
+        CREATE TABLE deck_cards(deckId INTEGER NOT NULL,cardId TEXT NOT NULL,zone TEXT NOT NULL,quantity INTEGER NOT NULL,PRIMARY KEY(deckId,cardId,zone),FOREIGN KEY(deckId) REFERENCES decks(id) ON UPDATE NO ACTION ON DELETE CASCADE);
+        CREATE INDEX index_deck_cards_deckId ON deck_cards(deckId);
+        CREATE INDEX index_deck_cards_cardId ON deck_cards(cardId);
+        CREATE TABLE deck_card_tags(deckId INTEGER NOT NULL,cardId TEXT NOT NULL,tag TEXT NOT NULL,PRIMARY KEY(deckId,cardId,tag),FOREIGN KEY(deckId) REFERENCES decks(id) ON UPDATE NO ACTION ON DELETE CASCADE);
+        CREATE INDEX index_deck_card_tags_deckId ON deck_card_tags(deckId);
+        CREATE INDEX index_deck_card_tags_cardId ON deck_card_tags(cardId);
+        CREATE INDEX index_deck_card_tags_tag ON deck_card_tags(tag);
+        CREATE TABLE cardtrader_prices(cardId TEXT NOT NULL PRIMARY KEY,blueprintId INTEGER NOT NULL,lowestPriceCents INTEGER,lowestZeroPriceCents INTEGER,currency TEXT NOT NULL,updatedAtEpochMs INTEGER NOT NULL);
+        CREATE INDEX index_cardtrader_prices_blueprintId ON cardtrader_prices(blueprintId);
+        CREATE INDEX index_cardtrader_prices_lowestPriceCents ON cardtrader_prices(lowestPriceCents);
+        CREATE INDEX index_cardtrader_prices_lowestZeroPriceCents ON cardtrader_prices(lowestZeroPriceCents);
+        CREATE TABLE oracle_price_refresh(oracleKey TEXT NOT NULL PRIMARY KEY,cardTraderUpdatedAtEpochMs INTEGER NOT NULL);
+        CREATE TABLE cardtrader_blueprints(blueprintId INTEGER NOT NULL PRIMARY KEY,expansionId INTEGER NOT NULL,scryfallId TEXT NOT NULL,cachedAtEpochMs INTEGER NOT NULL);
+        CREATE INDEX index_cardtrader_blueprints_expansionId ON cardtrader_blueprints(expansionId);
+        CREATE INDEX index_cardtrader_blueprints_scryfallId ON cardtrader_blueprints(scryfallId);
+        PRAGMA user_version=11;
     """)
 
 
@@ -366,6 +391,7 @@ def main() -> None:
     db.execute("PRAGMA synchronous=OFF")
     db.execute("PRAGMA temp_store=MEMORY")
     schema(db)
+    user_schema(db)
     placeholders = ",".join("?" for _ in CARD_COLUMNS)
     sql = f"INSERT INTO cards ({','.join(CARD_COLUMNS)}) VALUES ({placeholders})"
     batch, card_count = [], 0
@@ -429,11 +455,12 @@ def main() -> None:
             CREATE INDEX index_cards_lang ON cards(lang);
             CREATE INDEX index_cards_oracleKey_expr ON cards(COALESCE(oracleId,id));
             CREATE INDEX index_card_oracle_tags_tagSlug ON card_oracle_tags(tagSlug);
+            CREATE INDEX index_card_oracle_tags_tagSlug_oracleId ON card_oracle_tags(tagSlug,oracleId);
             CREATE INDEX index_illustration_art_tags_tagSlug ON illustration_art_tags(tagSlug);
             CREATE INDEX index_illustration_art_tags_illustrationId ON illustration_art_tags(illustrationId);
             CREATE INDEX index_rulings_oracleId ON rulings(oracleId);
-            CREATE VIRTUAL TABLE card_name_fts USING fts4(cardId TEXT, name TEXT, tokenize=unicode61);
-            INSERT INTO card_name_fts(cardId,name) SELECT id,name FROM cards;
+            CREATE VIRTUAL TABLE card_search_fts USING fts4(name,oracleText,typeLine,content='cards',tokenize=unicode61);
+            INSERT INTO card_search_fts(card_search_fts) VALUES('rebuild');
             ANALYZE;
         """)
     integrity = db.execute("PRAGMA integrity_check").fetchone()[0]
@@ -441,7 +468,24 @@ def main() -> None:
         raise RuntimeError(f"SQLite integrity check failed: {integrity}")
     db.execute("VACUUM")
     base = os.getenv("AETHERLIST_RELEASE_BASE", "").rstrip("/")
+    catalog_archive = DIST / "aetherlist-catalog.sqlite.gz"
+    with DB.open("rb") as src, catalog_archive.open("wb") as raw:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=raw, compresslevel=6, mtime=0) as dst:
+            shutil.copyfileobj(src, dst, 1024 * 1024)
+    catalog_identity = "|".join([
+        cards_item.get("updated_at", ""), (oracle_tags_item or {}).get("updated_at", ""),
+        (art_tags_item or {}).get("updated_at", ""), (rulings_item or {}).get("updated_at", ""),
+    ])
     datasets = {
+        "catalog": {
+            "revision": DATASET_REVISION,
+            "updatedAt": catalog_identity,
+            "count": card_count,
+            "compressedBytes": catalog_archive.stat().st_size,
+            "uncompressedBytes": DB.stat().st_size,
+            "sha256": sha256_file(catalog_archive),
+            "url": f"{base}/{catalog_archive.name}" if base else catalog_archive.name,
+        },
         "cards": publish_dataset(db, "cards", ("cards",), cards_item.get("updated_at", ""), card_count, base),
         "oracle_tags": publish_dataset(db, "oracle-tags", ("oracle_tags", "card_oracle_tags"),
                                        (oracle_tags_item or {}).get("updated_at", ""), oracle_refs, base),
