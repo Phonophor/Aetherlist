@@ -35,7 +35,7 @@ MANIFEST = DIST / "aetherlist-library-manifest.json"
 BATCH = 5000
 # Increment only when the on-device meaning/schema of a split asset changes.
 # Normal daily rebuilds use Scryfall's per-dataset updated_at for freshness.
-DATASET_REVISION = 5
+DATASET_REVISION = 6
 
 CARD_COLUMNS = (
     "id", "oracleId", "name", "manaCost", "manaValue", "typeLine", "oracleText", "colors",
@@ -46,7 +46,7 @@ CARD_COLUMNS = (
     "oracleLowestCtZeroCardId", "oraclePriceCurrency", "power", "toughness", "loyalty", "defense",
     "artist", "flavorText", "layout", "frame", "borderColor", "frameEffectsJson", "gamesJson",
     "finishesJson", "setType", "promoTypesJson", "producedManaJson", "fullArt", "textless",
-    "oversized", "reserved", "reprint", "variation", "digital", "promo", "booster", "storySpotlight"
+    "oversized", "reserved", "reprint", "variation", "digital", "promo", "booster", "storySpotlight", "facesJson"
 )
 
 
@@ -118,7 +118,7 @@ def card_row(card: dict, stamp: int) -> tuple:
         int(bool(card.get("full_art"))), int(bool(card.get("textless"))), int(bool(card.get("oversized"))),
         int(bool(card.get("reserved"))), int(bool(card.get("reprint"))), int(bool(card.get("variation"))),
         int(bool(card.get("digital"))), int(bool(card.get("promo"))), int(bool(card.get("booster"))),
-        int(bool(card.get("story_spotlight")))
+        int(bool(card.get("story_spotlight"))), compact([{k: f[k] for k in ("name", "oracle_text", "image_uris") if k in f} for f in card.get("card_faces") or []], [])
     )
 
 
@@ -137,7 +137,7 @@ def schema(connection: sqlite3.Connection) -> None:
         "setType TEXT NOT NULL", "promoTypesJson TEXT NOT NULL", "producedManaJson TEXT NOT NULL", "fullArt INTEGER NOT NULL",
         "textless INTEGER NOT NULL", "oversized INTEGER NOT NULL", "reserved INTEGER NOT NULL", "reprint INTEGER NOT NULL",
         "variation INTEGER NOT NULL", "digital INTEGER NOT NULL", "promo INTEGER NOT NULL", "booster INTEGER NOT NULL",
-        "storySpotlight INTEGER NOT NULL"
+        "storySpotlight INTEGER NOT NULL", "facesJson TEXT NOT NULL"
     ]
     connection.executescript(f"""
         CREATE TABLE cards ({','.join(columns)});
@@ -148,6 +148,23 @@ def schema(connection: sqlite3.Connection) -> None:
         CREATE TABLE rulings(oracleId TEXT NOT NULL, publishedAt TEXT NOT NULL, comment TEXT NOT NULL, source TEXT NOT NULL, PRIMARY KEY(oracleId,publishedAt,comment));
         CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
     """)
+
+
+def build_text_index(connection: sqlite3.Connection) -> None:
+    """One posting list per distinct text. No redundant regex evaluation per printing.
+
+    Run after VACUUM and retained-card insertion so posting rowids match the final file.
+    These auxiliary tables do not change Room's managed schema.
+    """
+    connection.executescript("""
+        DROP TABLE IF EXISTS search_text_index;
+        CREATE TABLE search_text_index(field TEXT NOT NULL,subject TEXT NOT NULL,rowIds TEXT NOT NULL,PRIMARY KEY(field,subject)) WITHOUT ROWID;
+        CREATE TABLE IF NOT EXISTS search_index_state(id INTEGER PRIMARY KEY,generation INTEGER NOT NULL,dirty INTEGER NOT NULL);
+        INSERT OR REPLACE INTO search_index_state VALUES(1,0,0);
+    """)
+    for field in ("name", "oracleText", "typeLine", "flavorText", "illustrationIdsJson"):
+        connection.execute(f"INSERT INTO search_text_index SELECT ?,{field},group_concat(rowid) FROM cards GROUP BY {field}", (field,))
+    connection.commit()
 
 
 def user_schema(connection: sqlite3.Connection) -> None:
@@ -172,12 +189,12 @@ def user_schema(connection: sqlite3.Connection) -> None:
         CREATE TABLE cardtrader_blueprints(blueprintId INTEGER NOT NULL PRIMARY KEY,expansionId INTEGER NOT NULL,scryfallId TEXT NOT NULL,cachedAtEpochMs INTEGER NOT NULL);
         CREATE INDEX index_cardtrader_blueprints_expansionId ON cardtrader_blueprints(expansionId);
         CREATE INDEX index_cardtrader_blueprints_scryfallId ON cardtrader_blueprints(scryfallId);
-        PRAGMA user_version=12;
+        PRAGMA user_version=13;
     """)
 
 
 def verify_room_managed_schema(connection: sqlite3.Connection) -> None:
-    """Reject catalog files whose managed indexes differ from Room v12.
+    """Reject catalog files whose managed indexes differ from Room v13.
 
     Room validates declared indexes before running AppDatabase.onOpen. Runtime-only
     expression/optimization indexes must therefore be created by onOpen, not shipped.
@@ -527,6 +544,7 @@ def main() -> None:
     if integrity != "ok":
         raise RuntimeError(f"SQLite integrity check failed: {integrity}")
     db.execute("VACUUM")
+    build_text_index(db)
     base = os.getenv("AETHERLIST_RELEASE_BASE", "").rstrip("/")
     catalog_archive = DIST / "aetherlist-catalog.sqlite.gz"
     with DB.open("rb") as src, catalog_archive.open("wb") as raw:
