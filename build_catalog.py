@@ -35,7 +35,7 @@ MANIFEST = DIST / "aetherlist-library-manifest.json"
 BATCH = 5000
 # Increment only when the on-device meaning/schema of a split asset changes.
 # Normal daily rebuilds use Scryfall's per-dataset updated_at for freshness.
-DATASET_REVISION = 4
+DATASET_REVISION = 5
 
 CARD_COLUMNS = (
     "id", "oracleId", "name", "manaCost", "manaValue", "typeLine", "oracleText", "colors",
@@ -494,6 +494,34 @@ def main() -> None:
             INSERT INTO card_search_fts(card_search_fts) VALUES('rebuild');
             ANALYZE;
         """)
+        # Build the Cardmarket/Scryfall EUR index once on the runner. The phone receives a
+        # compact indexed SQLite file and never parses a 25 MB price-guide JSON document.
+        db.executescript("""
+            CREATE TEMP TABLE oracle_cm AS
+            SELECT COALESCE(oracleId,id) AS oracleKey,
+                   MIN(CASE WHEN lang='en' AND cardmarketEur IS NOT NULL
+                            THEN CAST(ROUND(cardmarketEur*100.0) AS INTEGER) END) AS cents
+            FROM cards GROUP BY COALESCE(oracleId,id);
+            CREATE UNIQUE INDEX oracle_cm_key ON oracle_cm(oracleKey);
+            CREATE TEMP TABLE oracle_cm_id AS
+            SELECT a.oracleKey, MIN(c.id) AS cardId
+            FROM oracle_cm a JOIN cards c ON COALESCE(c.oracleId,c.id)=a.oracleKey
+            WHERE c.lang='en' AND a.cents IS NOT NULL AND c.cardmarketEur IS NOT NULL
+              AND CAST(ROUND(c.cardmarketEur*100.0) AS INTEGER)=a.cents
+            GROUP BY a.oracleKey;
+            CREATE UNIQUE INDEX oracle_cm_id_key ON oracle_cm_id(oracleKey);
+            UPDATE cards SET
+              oracleLowestCardmarketCents=(SELECT cents FROM oracle_cm WHERE oracleKey=COALESCE(cards.oracleId,cards.id)),
+              oracleLowestCardmarketCardId=(SELECT cardId FROM oracle_cm_id WHERE oracleKey=COALESCE(cards.oracleId,cards.id));
+            CREATE TABLE cardmarket_price_index(
+              cardId TEXT NOT NULL PRIMARY KEY,
+              eur REAL,
+              oracleLowestCents INTEGER,
+              oracleLowestCardId TEXT
+            );
+            INSERT INTO cardmarket_price_index(cardId,eur,oracleLowestCents,oracleLowestCardId)
+            SELECT id,cardmarketEur,oracleLowestCardmarketCents,oracleLowestCardmarketCardId FROM cards;
+        """)
     verify_room_managed_schema(db)
     integrity = db.execute("PRAGMA integrity_check").fetchone()[0]
     if integrity != "ok":
@@ -525,6 +553,8 @@ def main() -> None:
                                     (art_tags_item or {}).get("updated_at", ""), art_refs, base),
         "rulings": publish_dataset(db, "rulings", ("rulings",),
                                   (rulings_item or {}).get("updated_at", ""), ruling_count, base),
+        "cardmarket": publish_dataset(db, "cardmarket", ("cardmarket_price_index",),
+                                      cards_item.get("updated_at", ""), card_count, base),
     }
     db.close()
     manifest = {
