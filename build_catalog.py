@@ -35,7 +35,7 @@ MANIFEST = DIST / "aetherlist-library-manifest.json"
 BATCH = 5000
 # Increment only when the on-device meaning/schema of a split asset changes.
 # Normal daily rebuilds use Scryfall's per-dataset updated_at for freshness.
-DATASET_REVISION = 3
+DATASET_REVISION = 4
 
 CARD_COLUMNS = (
     "id", "oracleId", "name", "manaCost", "manaValue", "typeLine", "oracleText", "colors",
@@ -155,7 +155,8 @@ def user_schema(connection: sqlite3.Connection) -> None:
     connection.executescript("""
         CREATE TABLE decks(id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,name TEXT NOT NULL,format TEXT NOT NULL,notes TEXT NOT NULL,folderId INTEGER,createdAt INTEGER NOT NULL,updatedAt INTEGER NOT NULL);
         CREATE INDEX index_decks_folderId ON decks(folderId);
-        CREATE TABLE deck_folders(id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,name TEXT NOT NULL,sortOrder INTEGER NOT NULL,createdAt INTEGER NOT NULL);
+        CREATE TABLE deck_folders(id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,name TEXT NOT NULL,parentId INTEGER,sortOrder INTEGER NOT NULL,createdAt INTEGER NOT NULL);
+        CREATE INDEX index_deck_folders_parentId ON deck_folders(parentId);
         CREATE TABLE deck_cards(deckId INTEGER NOT NULL,cardId TEXT NOT NULL,zone TEXT NOT NULL,quantity INTEGER NOT NULL,PRIMARY KEY(deckId,cardId,zone),FOREIGN KEY(deckId) REFERENCES decks(id) ON UPDATE NO ACTION ON DELETE CASCADE);
         CREATE INDEX index_deck_cards_deckId ON deck_cards(deckId);
         CREATE INDEX index_deck_cards_cardId ON deck_cards(cardId);
@@ -171,12 +172,12 @@ def user_schema(connection: sqlite3.Connection) -> None:
         CREATE TABLE cardtrader_blueprints(blueprintId INTEGER NOT NULL PRIMARY KEY,expansionId INTEGER NOT NULL,scryfallId TEXT NOT NULL,cachedAtEpochMs INTEGER NOT NULL);
         CREATE INDEX index_cardtrader_blueprints_expansionId ON cardtrader_blueprints(expansionId);
         CREATE INDEX index_cardtrader_blueprints_scryfallId ON cardtrader_blueprints(scryfallId);
-        PRAGMA user_version=11;
+        PRAGMA user_version=12;
     """)
 
 
 def verify_room_managed_schema(connection: sqlite3.Connection) -> None:
-    """Reject catalog files whose managed card indexes differ from Room v11.
+    """Reject catalog files whose managed indexes differ from Room v12.
 
     Room validates declared indexes before running AppDatabase.onOpen. Runtime-only
     expression/optimization indexes must therefore be created by onOpen, not shipped.
