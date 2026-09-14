@@ -1,4 +1,12 @@
-# Aetherlist hosted card library
+# Aetherlist catalog repository v4
+
+This version emits Room schema 12 for Aetherlist 0.18.0 and later. It adds the
+nested `deck_folders.parentId` column while keeping all user tables empty in the
+published catalog. The app copies users' decks and folder tree during activation.
+
+The scheduled workflow checks Scryfall at 05:00 Europe/Zurich. The app compares
+the manifest's upstream `updatedAt` identity before downloading, so a daily check
+does not redownload the catalog when Scryfall's datasets are unchanged.
 
 This repository builds the expensive part of Aetherlist's offline library on a GitHub runner. The Android app only has to download, verify, decompress, and bulk-copy the finished SQLite catalog. Card images are **not** included; only Scryfall image URLs are stored.
 
