@@ -5,7 +5,7 @@ on:
   schedule:
     # GitHub cron is UTC. Running at both possible UTC hours plus the Zurich
     # guard below keeps this at 05:00 through CET and CEST transitions.
-    - cron: "0 4 * * *"
+    - cron: "0 3 * * *"
 
 permissions:
   contents: write
@@ -81,7 +81,8 @@ jobs:
             "$GITHUB_WORKSPACE/dist/aetherlist-cards.sqlite.gz" \
             "$GITHUB_WORKSPACE/dist/aetherlist-oracle-tags.sqlite.gz" \
             "$GITHUB_WORKSPACE/dist/aetherlist-art-tags.sqlite.gz" \
-            "$GITHUB_WORKSPACE/dist/aetherlist-rulings.sqlite.gz"; do
+            "$GITHUB_WORKSPACE/dist/aetherlist-rulings.sqlite.gz" \
+            "$GITHUB_WORKSPACE/dist/aetherlist-cardmarket.sqlite.gz"; do
             if [ ! -s "$archive" ]; then
               echo "::error::The builder did not create $archive."
               exit 1
