@@ -35,7 +35,7 @@ MANIFEST = DIST / "aetherlist-library-manifest.json"
 BATCH = 5000
 # Increment only when the on-device meaning/schema of a split asset changes.
 # Normal daily rebuilds use Scryfall's per-dataset updated_at for freshness.
-DATASET_REVISION = 6
+DATASET_REVISION = 7
 
 CARD_COLUMNS = (
     "id", "oracleId", "name", "manaCost", "manaValue", "typeLine", "oracleText", "colors",
@@ -164,6 +164,92 @@ def build_text_index(connection: sqlite3.Connection) -> None:
     """)
     for field in ("name", "oracleText", "typeLine", "flavorText", "illustrationIdsJson"):
         connection.execute(f"INSERT INTO search_text_index SELECT ?,{field},group_concat(rowid) FROM cards GROUP BY {field}", (field,))
+    connection.commit()
+
+
+def build_tag_row_indexes(connection: sqlite3.Connection) -> None:
+    """Precompute compact tag-to-card row postings for first-query speed."""
+    connection.executescript("""
+        DROP TABLE IF EXISTS search_oracle_tag_rows;
+        DROP TABLE IF EXISTS search_art_tag_rows;
+        DROP TABLE IF EXISTS search_illustration_rows;
+        CREATE TABLE search_oracle_tag_rows(tagSlug TEXT PRIMARY KEY,rowIds TEXT NOT NULL) WITHOUT ROWID;
+        CREATE TABLE search_art_tag_rows(tagSlug TEXT PRIMARY KEY,rowIds TEXT NOT NULL) WITHOUT ROWID;
+        CREATE TABLE search_illustration_rows(illustrationId TEXT PRIMARY KEY,rowIds TEXT NOT NULL) WITHOUT ROWID;
+    """)
+    illustration_rows = {}
+    for rowid, raw in connection.execute("SELECT rowid,illustrationIdsJson FROM cards"):
+        try:
+            ids = json.loads(raw or "[]")
+        except (TypeError, ValueError):
+            ids = []
+        for illustration_id in ids:
+            if illustration_id:
+                illustration_rows.setdefault(illustration_id, []).append(str(rowid))
+    connection.executemany("INSERT INTO search_illustration_rows VALUES (?,?)",
+                           ((key, ",".join(rows)) for key, rows in illustration_rows.items()))
+    connection.execute("""
+        INSERT INTO search_oracle_tag_rows
+        SELECT cot.tagSlug, group_concat(DISTINCT c.rowid)
+        FROM card_oracle_tags cot JOIN cards c ON c.oracleId=cot.oracleId
+        GROUP BY cot.tagSlug
+    """)
+    connection.execute("""
+        INSERT INTO search_art_tag_rows
+        SELECT iat.tagSlug, group_concat(DISTINCT sr.rowIds)
+        FROM illustration_art_tags iat JOIN search_illustration_rows sr
+          ON sr.illustrationId=iat.illustrationId
+        GROUP BY iat.tagSlug
+    """)
+    connection.commit()
+
+
+def build_search_snapshot(connection: sqlite3.Connection) -> None:
+    """Materialize immutable row metadata and stable sort postings.
+
+    The app can open these compact postings on its first launch instead of
+    scanning and sorting the complete card table after every process restart.
+    Price is intentionally excluded because it is refreshed by the app.
+    """
+    connection.executescript("""
+        DROP TABLE IF EXISTS search_row_index;
+        DROP TABLE IF EXISTS search_order_rows;
+        CREATE TABLE search_row_index(
+            rowid INTEGER PRIMARY KEY, preferencePosition INTEGER NOT NULL,
+            oracleGroup INTEGER NOT NULL, artGroup INTEGER NOT NULL,
+            manaValue REAL NOT NULL, colors TEXT NOT NULL,
+            colorIdentity TEXT NOT NULL, legalitiesJson TEXT NOT NULL
+        ) WITHOUT ROWID;
+        CREATE TABLE search_order_rows(
+            orderKey TEXT NOT NULL, descending INTEGER NOT NULL, rowIds TEXT NOT NULL,
+            PRIMARY KEY(orderKey,descending)
+        ) WITHOUT ROWID;
+    """)
+    cards = connection.execute("""SELECT rowid,COALESCE(oracleId,id),
+        CASE WHEN illustrationIdsJson != '[]' THEN illustrationIdsJson ELSE COALESCE(oracleId,id) END,
+        manaValue,colors,colorIdentity,legalitiesJson,releasedAt,id
+        FROM cards ORDER BY releasedAt || '|' || id DESC""").fetchall()
+    oracle_ids, art_ids = {}, {}
+    rows = []
+    for position, (rowid, oracle_key, art_key, mana, colors, identity, legalities, _released, _id) in enumerate(cards):
+        oracle_group = oracle_ids.setdefault(oracle_key, len(oracle_ids))
+        art_group = art_ids.setdefault(art_key, len(art_ids))
+        rows.append((rowid, position, oracle_group, art_group, mana, colors or "", identity or "", legalities or "{}"))
+    connection.executemany("INSERT INTO search_row_index VALUES (?,?,?,?,?,?,?,?)", rows)
+    order_sql = {
+        "name": "name COLLATE NOCASE",
+        "set": "setCode COLLATE NOCASE, collectorNumber COLLATE NOCASE",
+        "released": "releasedAt",
+        "cmc": "manaValue",
+        "rarity": "CASE LOWER(rarity) WHEN 'common' THEN 0 WHEN 'uncommon' THEN 1 WHEN 'rare' THEN 2 WHEN 'mythic' THEN 3 ELSE -1 END",
+        "color": "length(colors), colors",
+        "artist": "artist COLLATE NOCASE",
+    }
+    for key, expression in order_sql.items():
+        for descending, direction in ((0, "ASC"), (1, "DESC")):
+            sql = f"SELECT group_concat(rowid) FROM (SELECT rowid FROM cards ORDER BY {expression} {direction}, name COLLATE NOCASE, releasedAt DESC, id)"
+            row_ids = connection.execute(sql).fetchone()[0] or ""
+            connection.execute("INSERT INTO search_order_rows VALUES (?,?,?)", (key, descending, row_ids))
     connection.commit()
 
 
@@ -490,6 +576,10 @@ def main() -> None:
         print("Importing art tags", flush=True)
         art_refs = import_tags(db, art_tags_url, "art-tags")
         print(f"Art tag references: {art_refs}", flush=True)
+        print("Building tag row indexes", flush=True)
+        build_tag_row_indexes(db)
+        print("Building immutable search snapshot", flush=True)
+        build_search_snapshot(db)
         db.executemany("INSERT INTO metadata VALUES (?,?)", [
             ("schema_version", "1"), ("cards_updated_at", cards_item.get("updated_at", "")),
             ("oracle_tags_updated_at", (oracle_tags_item or {}).get("updated_at", "")),
