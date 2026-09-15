@@ -17,9 +17,16 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual(len(row), len(builder.CARD_COLUMNS))
         db.execute('INSERT INTO cards(' + ','.join(builder.CARD_COLUMNS) + ') VALUES(' + ','.join('?' for _ in row) + ')', row)
         builder.build_text_index(db)
+        db.execute("INSERT INTO oracle_tags VALUES('draw','draw')")
+        db.execute("INSERT INTO card_oracle_tags VALUES('a','draw',1.0)")
+        db.execute("INSERT INTO art_tags VALUES('dragon','dragon')")
+        db.execute("INSERT INTO illustration_art_tags VALUES('front','dragon',1.0)")
+        builder.build_tag_row_indexes(db)
         self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 13)
         self.assertIn('back', db.execute('SELECT facesJson FROM cards').fetchone()[0])
         self.assertEqual(db.execute('SELECT rowIds FROM search_text_index WHERE field=?', ('oracleText',)).fetchone()[0], '1')
+        self.assertEqual(db.execute("SELECT rowIds FROM search_oracle_tag_rows WHERE tagSlug='draw'").fetchone()[0], '1')
+        self.assertEqual(db.execute("SELECT rowIds FROM search_art_tag_rows WHERE tagSlug='dragon'").fetchone()[0], '1')
 
 
 if __name__ == '__main__':
