@@ -118,7 +118,7 @@ def card_row(card: dict, stamp: int) -> tuple:
         int(bool(card.get("full_art"))), int(bool(card.get("textless"))), int(bool(card.get("oversized"))),
         int(bool(card.get("reserved"))), int(bool(card.get("reprint"))), int(bool(card.get("variation"))),
         int(bool(card.get("digital"))), int(bool(card.get("promo"))), int(bool(card.get("booster"))),
-        int(bool(card.get("story_spotlight"))), compact([{k: f[k] for k in ("name", "oracle_text", "image_uris") if k in f} for f in card.get("card_faces") or []], [])
+        int(bool(card.get("story_spotlight"))), compact([{k: f[k] for k in ("name", "oracle_text", "image_uris", "mana_cost", "type_line", "power", "toughness", "loyalty", "defense") if k in f} for f in card.get("card_faces") or []], [])
     )
 
 
