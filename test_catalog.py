@@ -11,8 +11,8 @@ class CatalogTest(unittest.TestCase):
         builder.schema(db)
         builder.user_schema(db)
         card = {'id': 'a', 'name': 'Front // Back', 'card_faces': [
-            {'name': 'Front', 'oracle_text': 'Pay 7 life.', 'image_uris': {'normal': 'front'}},
-            {'name': 'Back', 'oracle_text': 'Draw a card.', 'image_uris': {'normal': 'back'}}]}
+            {'name': 'Front', 'oracle_text': 'Pay 7 life.', 'image_uris': {'normal': 'front'}, 'mana_cost': '{1}{W}', 'type_line': 'Creature — Test', 'power': '2', 'toughness': '3'},
+            {'name': 'Back', 'oracle_text': 'Draw a card.', 'image_uris': {'normal': 'back'}, 'mana_cost': '{2}{U}', 'type_line': 'Creature — Test', 'power': '4', 'toughness': '5'}]}
         row = builder.card_row(card, 1)
         self.assertEqual(len(row), len(builder.CARD_COLUMNS))
         db.execute('INSERT INTO cards(' + ','.join(builder.CARD_COLUMNS) + ') VALUES(' + ','.join('?' for _ in row) + ')', row)
@@ -23,7 +23,11 @@ class CatalogTest(unittest.TestCase):
         db.execute("INSERT INTO illustration_art_tags VALUES('front','dragon',1.0)")
         builder.build_tag_row_indexes(db)
         self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 13)
-        self.assertIn('back', db.execute('SELECT facesJson FROM cards').fetchone()[0])
+        faces = db.execute('SELECT facesJson FROM cards').fetchone()[0]
+        self.assertIn('back', faces)
+        self.assertIn('\"mana_cost\":\"{2}{U}\"', faces)
+        self.assertIn('\"power\":\"4\"', faces)
+        self.assertIn('\"toughness\":\"5\"', faces)
         self.assertEqual(db.execute('SELECT rowIds FROM search_text_index WHERE field=?', ('oracleText',)).fetchone()[0], '1')
         self.assertEqual(db.execute("SELECT rowIds FROM search_oracle_tag_rows WHERE tagSlug='draw'").fetchone()[0], '1')
         self.assertEqual(db.execute("SELECT rowIds FROM search_art_tag_rows WHERE tagSlug='dragon'").fetchone()[0], '1')
